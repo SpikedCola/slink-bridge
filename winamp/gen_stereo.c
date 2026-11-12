@@ -580,6 +580,17 @@ static void fitViewToFrame(void) {
                SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
+/* Classic skin: the frame is a top-level window, remember where it is and how
+   big. Modern skins remember this themselves (by GUID). */
+static void saveGeometry(void) {
+  RECT r;
+  if (!isClassicFrame() || !GetWindowRect(hFrame, &r)) return;
+  saveInt(L"x", r.left);
+  saveInt(L"y", r.top);
+  saveInt(L"w", r.right - r.left);
+  saveInt(L"h", r.bottom - r.top);
+}
+
 /* Point in frame client coordinates is on the skin's bottom-right resize corner. */
 static int inResizeCorner(HWND hwnd, POINT pt) {
   RECT rc;
@@ -681,6 +692,11 @@ static LRESULT CALLBACK frameProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       fitViewToFrame();
       InvalidateRect(hwnd, NULL, TRUE); /* frame skin pieces move with the size */
       return r;
+    case WM_DESTROY:
+      /* On a normal exit Winamp destroys its windows, this one included, before
+         it calls quit(), so this is the last chance to see the size. */
+      saveGeometry();
+      break;
   }
   return CallWindowProcW(oldFrameProc, hwnd, msg, wp, lp);
 }
@@ -781,6 +797,7 @@ static void createWindow(void) {
   WNDCLASSW wc = {0};
   embedWindowFunc embed = (embedWindowFunc)SendMessageW(hwndWinamp, WM_WA_IPC, 0, IPC_GET_EMBEDIF);
   RECT m;
+  int w, h;
   if (!embed || hFrame) return;
 
   wc.style = CS_DBLCLKS;
@@ -797,8 +814,10 @@ static void createWindow(void) {
   memcpy(&ews.extra_data[4], &STEREO_GUID, sizeof STEREO_GUID); /* SET_EMBED_GUID */
   ews.r.left = loadInt(L"x", m.left);
   ews.r.top = loadInt(L"y", m.bottom);
-  ews.r.right = ews.r.left + clampInt(loadInt(L"w", MAX_W), MIN_W, MAX_W);
-  ews.r.bottom = ews.r.top + clampInt(loadInt(L"h", MAX_H), MIN_H, MAX_H);
+  w = clampInt(loadInt(L"w", MAX_W), MIN_W, MAX_W);
+  h = clampInt(loadInt(L"h", MAX_H), MIN_H, MAX_H);
+  ews.r.right = ews.r.left + w;
+  ews.r.bottom = ews.r.top + h;
 
   hFrame = embed(&ews);
   if (!hFrame) return;
@@ -808,9 +827,9 @@ static void createWindow(void) {
                           MAX_W - INSET_L - INSET_R, MAX_H - INSET_T - INSET_B, hFrame, NULL, plugin.hDllInstance, NULL);
   oldFrameProc = (WNDPROC)SetWindowLongPtrW(hFrame, GWLP_WNDPROC, (LONG_PTR)frameProc);
   if (isClassicFrame()) {
-    RECT fr;
-    GetWindowRect(hFrame, &fr);
-    resizeFrame(fr.right - fr.left, fr.bottom - fr.top); /* apply the limits to a restored size */
+    /* Winamp creates classic frames no smaller than 275x116 whatever we asked
+       for, so put the saved size back now that frameProc can enforce it. */
+    resizeFrame(w, h);
     fitViewToFrame();
   }
   if (loadInt(L"visible", 1)) showWindow(1);
@@ -924,17 +943,12 @@ static int init(void) {
 }
 
 static void quit(void) {
+  /* Only when Winamp unloads us with its windows still up (Windows shutting
+     down, plugin removed); after a normal exit the frame is already gone and
+     frameProc has saved its geometry. */
   if (hFrame && IsWindow(hFrame)) {
-    RECT r;
     saveInt(L"visible", IsWindowVisible(hFrame) ? 1 : 0);
-    /* Classic skin: the frame is a top-level window, remember where it is.
-       Modern skins remember the position themselves (by GUID). */
-    if (isClassicFrame() && GetWindowRect(hFrame, &r)) {
-      saveInt(L"x", r.left);
-      saveInt(L"y", r.top);
-      saveInt(L"w", r.right - r.left);
-      saveInt(L"h", r.bottom - r.top);
-    }
+    saveGeometry();
     if ((WNDPROC)GetWindowLongPtrW(hFrame, GWLP_WNDPROC) == frameProc)
       SetWindowLongPtrW(hFrame, GWLP_WNDPROC, (LONG_PTR)oldFrameProc);
     DestroyWindow(hFrame);
