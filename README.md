@@ -49,6 +49,14 @@ The outline of the board cuts the 0.1" header, resulting in castellations that c
 - I didn't pay for the castellation option, and the cut header was a little rough but worked just fine.
 - The holes to pass the cable through for strain relief didn't work as expected - the cable causes the board not to sit flat. Didn't end up using them.
 
+## Winamp Plugin
+
+This was the ultimate goal of the project - an easy interface to switch between Computer and TV sources.
+
+The plugin adds a small window with buttons to switch between sources.
+
+[<img src="images/winamp.png" alt="Board Top" width="300">](pcb/S-Link%20Bridge%20v1.0%20Top.png)
+
 ## Firmware
 
 The ESP32 runs `WebServer.h` which displays a single page with HTML/CSS/JS.
