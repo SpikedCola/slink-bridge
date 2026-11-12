@@ -328,20 +328,41 @@ static void queuePoll(void) {
 /* Media-library style colours, read from the skin's genex.bmp like wa_dlg.h does. */
 enum { C_ITEMBG, C_ITEMFG, C_WNDBG, C_BUTTONFG, C_WNDFG, C_HILITE, C_SELCOLOR, C_COUNT };
 
-static void getSkin(HDC memdc, COLORREF *col, HBITMAP *genex) {
+/* Winamp loads a new copy of genex.bmp for every IPC_GET_GENSKINBITMAP and the
+   caller owns it. We keep one copy per skin and delete it ourselves; asking on
+   every paint would use up a GDI handle each time until Winamp runs out. */
+static HBITMAP skinBmp;
+static COLORREF skinCol[C_COUNT];
+
+static void freeSkin(void) {
+  if (skinBmp) DeleteObject(skinBmp);
+  skinBmp = NULL;
+}
+
+/* Fetches genex.bmp and its colours unless we already have them. Without a
+   bitmap the colours are the defaults, and the next call tries again. */
+static void loadSkin(void) {
   static const COLORREF defaults[C_COUNT] = {RGB(0, 0, 0),     RGB(0, 255, 0),   RGB(36, 36, 60), RGB(255, 255, 255),
                                              RGB(198, 198, 222), RGB(0, 0, 198), RGB(0, 128, 255)};
-  HBITMAP bm = (HBITMAP)SendMessageW(hwndWinamp, WM_WA_IPC, 0, IPC_GET_GENSKINBITMAP);
+  HDC dc;
+  HGDIOBJ old;
   int i;
-  memcpy(col, defaults, sizeof defaults);
-  *genex = NULL;
-  if (bm && SelectObject(memdc, bm)) {
+  if (skinBmp) return;
+  memcpy(skinCol, defaults, sizeof defaults);
+  skinBmp = (HBITMAP)SendMessageW(hwndWinamp, WM_WA_IPC, 0, IPC_GET_GENSKINBITMAP);
+  if (!skinBmp) return;
+  dc = CreateCompatibleDC(NULL);
+  old = dc ? SelectObject(dc, skinBmp) : NULL;
+  if (old) {
     for (i = 0; i < C_COUNT; i++) {
-      COLORREF c = GetPixel(memdc, 48 + i * 2, 0);
-      if (c != CLR_INVALID) col[i] = c;
+      COLORREF c = GetPixel(dc, 48 + i * 2, 0);
+      if (c != CLR_INVALID) skinCol[i] = c;
     }
-    *genex = bm;
+    SelectObject(dc, old);
+  } else {
+    freeSkin(); /* can't draw from it */
   }
+  if (dc) DeleteDC(dc);
 }
 
 /* Draws a button face from genex.bmp (47x15 at y=0 normal, y=15 pressed) as a 9-slice. */
@@ -448,7 +469,8 @@ static void paintView(HWND hwnd, HDC hdc) {
   Layout L;
   HDC mem = CreateCompatibleDC(hdc), skin = CreateCompatibleDC(hdc);
   HBITMAP bmp, oldBmp, genex;
-  COLORREF col[C_COUNT];
+  HGDIOBJ oldSkin;
+  const COLORREF *col = skinCol;
   char text[160];
   RecvState st;
   int i, active, hasStatus;
@@ -459,8 +481,10 @@ static void paintView(HWND hwnd, HDC hdc) {
   GetClientRect(hwnd, &rc);
   bmp = CreateCompatibleBitmap(hdc, rc.right > 0 ? rc.right : 1, rc.bottom > 0 ? rc.bottom : 1);
   oldBmp = SelectObject(mem, bmp);
-  HGDIOBJ oldSkin = GetCurrentObject(skin, OBJ_BITMAP);
-  getSkin(skin, col, &genex);
+  loadSkin();
+  genex = skinBmp;
+  oldSkin = genex ? SelectObject(skin, genex) : NULL;
+  if (!oldSkin) genex = NULL; /* no skin bitmap: flat buttons in the default colours */
   layout(&rc, hasStatus, &L);
 
   fillRect(mem, &rc, col[C_WNDBG]);
@@ -513,7 +537,7 @@ static void paintView(HWND hwnd, HDC hdc) {
   }
 
   BitBlt(hdc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
-  SelectObject(skin, oldSkin); /* hand genex.bmp back to Winamp */
+  if (oldSkin) SelectObject(skin, oldSkin); /* genex.bmp stays ours, for the next paint */
   SelectObject(mem, oldBmp);
   DeleteObject(bmp);
   DeleteDC(skin);
@@ -570,6 +594,10 @@ static int inResizeCorner(HWND hwnd, POINT pt) {
    size choices to stay in that range. */
 static LRESULT CALLBACK frameProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   LRESULT r;
+  if (msg == WM_DISPLAYCHANGE) { /* Winamp posts this to every embed frame after a skin change */
+    freeSkin();
+    if (hView) InvalidateRect(hView, NULL, FALSE);
+  }
   if (!isClassicFrame()) return CallWindowProcW(oldFrameProc, hwnd, msg, wp, lp);
   switch (msg) {
     case WM_NCHITTEST: {
@@ -671,8 +699,11 @@ static LRESULT CALLBACK viewProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       EndPaint(hwnd, &ps);
       return 0;
     }
+    case WM_DISPLAYCHANGE: /* Winamp sends this on skin change: reload genex.bmp */
+      freeSkin();
+      InvalidateRect(hwnd, NULL, FALSE);
+      return 0;
     case WM_SIZE:
-    case WM_DISPLAYCHANGE: /* Winamp sends this on skin change */
       InvalidateRect(hwnd, NULL, FALSE);
       return 0;
     case WM_TIMER:
@@ -930,6 +961,7 @@ static void quit(void) {
       for (px = 0; px < MAX_FONT_PX; px++)
         if (fonts[b][px]) DeleteObject(fonts[b][px]);
   }
+  freeSkin();
   DeleteCriticalSection(&cs);
 }
 
